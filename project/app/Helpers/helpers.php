@@ -1,0 +1,551 @@
+<?php
+
+use Carbon\Carbon;
+use App\Models\Charge;
+use Twilio\Rest\Client;
+use App\Models\Currency;
+use Illuminate\Support\Str;
+use App\Models\EmailTemplate;
+use App\Models\Generalsetting;
+use App\Models\PaymentGateway;
+use App\Models\SmsGateway;
+use Illuminate\Support\Facades\Http;
+use PHPMailer\PHPMailer\Exception;
+use PHPMailer\PHPMailer\PHPMailer;
+use Illuminate\Support\Facades\Session;
+
+function getPhoto($filename)
+{
+    if($filename){
+        if(file_exists('assets/images'.'/'.$filename)) return asset('assets/images/'.$filename);
+        else return asset('assets/images/default.png');
+    } else{
+        return asset('assets/images/default.png');
+    }
+}
+
+function sysVersion()
+{
+    return '3.0';
+}
+
+function addonLicenceCheck($script_key,$addon_key){
+    return Http::get("https://geniusocean.com/verify/addoncheck.php?script_code=$script_key&addon_code=$addon_key")->json();
+}
+
+function admin()
+{
+   return auth()->guard('admin')->user();
+}
+function merchant()
+{
+    // Merchant guard first (merchant login/dashboard), then fall back to the
+    // default guard, because user-side pages reuse MerchantController.
+    if (auth()->guard('merchant')->check()) {
+        return auth()->guard('merchant')->user();
+    }
+    return auth()->user();
+}
+function agent()
+{
+   return auth()->guard('agent')->user();
+}
+
+function user(){
+    if(auth()->check()){
+        $user = auth()->user();
+        $type = 1;
+    }
+   
+    if(auth()->guard('merchant')->check()){
+        $user = auth()->guard('merchant')->user();
+        $type = 2;
+    }
+
+    return json_decode(json_encode(['user'=>$user,'type'=>$type]));
+}
+
+function menu($route)
+{
+    if(is_array($route)) {
+        foreach ($route as $value) {
+            if (request()->routeIs($value)) {
+                return 'active';
+            }
+        }
+    } elseif (request()->routeIs($route)) {
+        return 'active';
+    }
+}
+
+
+function tagFormat($tag)
+{
+    $common_rep   = ["value", "{", "}", "[","]",":","\""];
+    $tag = str_replace($common_rep, '', $tag);
+    if (!empty($tag))  return $tag;   
+    else  return  null;
+}
+
+function numFormat($amount, $length = 0)
+{
+    if(0 < $length)return number_format( $amount + 0, $length);
+    return $amount + 0;
+}
+
+/**
+ * Amount as plain text for emails: no scientific notation (1.0E-5), crypto keeps up to 8 decimals,
+ * fiat shows 2 decimals.
+ */
+function plainAmount($amount, $type = 1)
+{
+    if ($type == 2) {
+        $s = number_format((float) $amount, 8, '.', '');
+        return rtrim(rtrim($s, '0'), '.');
+    }
+    return number_format((float) $amount, 2, '.', ',');
+}
+
+function amount($amount,$type = 1,$length = 0){
+    if($type == 2) return round($amount,8);
+    else return round($amount,$length);  
+}
+
+function charge($slug)
+{
+    $charge = Charge::where('slug',$slug)->first();
+    return $charge->data;
+}
+
+function chargeCalc($charge,$amount,$rate = 1)
+{
+  return  ($charge->fixed_charge * $rate) + ($amount * ($charge->percent_charge/100));
+}
+
+function dateFormat($date,$format = 'd M Y -- h:i a'){
+    return Carbon::parse($date)->format($format);
+}
+
+function randNum($digits = 6){
+    return rand(pow(10, $digits-1), pow(10, $digits)-1);
+}
+
+function str_rand($length = 12,$up = false)
+{
+    if($up) return Str::random($length);
+    else return strtoupper(Str::random($length)); 
+}
+
+
+function getCurrency(){
+    if(Session::has('currency')){
+        $currency = Currency::findOrFail(Session::get('currency'));
+    }else{
+        $currency = Currency::whereIsDefault(1)->first();
+    }
+    return json_encode($currency->toArray());
+}
+
+
+ // Payment Gateway Keyword Calculation 0
+function getCallback($id)
+ {
+     return PaymentGateway::findOrFail($id)->keyword;
+ }
+
+
+
+function email($data){
+    $gs = Generalsetting::first();
+
+    if ($gs->email_notify) {
+        if ($gs->mail_type == 'php_mail') {
+            $headers = "From: $gs->sitename <$gs->email_from> \r\n";
+            $headers .= "Reply-To: $gs->sitename <$gs->email_from> \r\n";
+            $headers .= "MIME-Version: 1.0\r\n";
+            $headers .= "Content-Type: text/html; charset=utf-8\r\n";
+            @mail($data['email'], $data['subject'], $data['message'], $headers);
+        }
+        else {
+            $mail = new PHPMailer(true);
+    
+            try {
+                // $mail->isSMTP();
+                $mail->Host       = $gs->smtp_host;
+                $mail->SMTPAuth   = true;
+                $mail->Username   = $gs->smtp_user;
+                $mail->Password   = $gs->smtp_pass;
+                if ($gs->mail_encryption == 'ssl') {
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+                } else {
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                }
+                $mail->Port       = $gs->smtp_port;
+                $mail->CharSet = 'UTF-8';
+                $mail->setFrom($gs->from_email, $gs->from_name);
+                $mail->addAddress($data['email'], $data['name']);
+                $mail->addReplyTo($gs->from_email, $gs->from_name);
+                $mail->isHTML(true);
+                $mail->Subject = $data['subject'];
+                $mail->Body    = $data['message'];
+                $mail->send();
+            } catch (Exception $e) {
+                throw new Exception($e);
+            }
+        }
+    }
+}
+
+
+/**
+ * Send an email template to every active super-admin (used for admin alerts, e.g. new withdrawal request).
+ */
+function notifyAdmins($key, array $data)
+{
+    try {
+        $admins = \App\Models\Admin::where('role', 'super-admin')->where('status', 1)->get();
+        foreach ($admins as $admin) {
+            mailSend($key, $data, $admin);
+        }
+    } catch (\Throwable $th) {
+        // an alert email must never break the request that triggered it
+    }
+}
+
+/**
+ * Alert super-admins about a user deposit (template: new_deposit). $deposit = App\Models\Deposit, $user = depositor.
+ */
+function notifyAdminsDeposit($deposit, $user)
+{
+    try {
+        $currency = \App\Models\Currency::find($deposit->currency_id);
+        $gateway  = \App\Models\PaymentGateway::find($deposit->method);
+        $type     = $currency ? $currency->type : 1;
+        notifyAdmins('new_deposit', [
+            'depositor'       => e($user->name),
+            'depositor_email' => e($user->email),
+            'amount'          => plainAmount($deposit->amount, $type),
+            'charge'          => plainAmount($deposit->charge ?? 0, $type),
+            'curr'            => $currency ? $currency->code : '',
+            'method'          => $gateway ? e($gateway->name) : '-',
+            'status'          => $deposit->status == 'pending' ? 'Pending - needs your approval' : 'Completed',
+            'trnx'            => e($deposit->txn_id),
+            'date_time'       => dateFormat($deposit->created_at ?? now()),
+            'link'            => route('admin.deposit')
+        ]);
+    } catch (\Throwable $th) {
+        // an alert email must never break the deposit
+    }
+}
+
+/**
+ * Tell the user their deposit was credited (template: deposit_success). $deposit = App\Models\Deposit, $user = depositor.
+ */
+function notifyUserDeposit($deposit, $user)
+{
+    try {
+        $currency = \App\Models\Currency::find($deposit->currency_id);
+        $gateway  = \App\Models\PaymentGateway::find($deposit->method);
+        $wallet   = \App\Models\Wallet::where('user_id', $user->id)->where('user_type', 1)->where('currency_id', $deposit->currency_id)->first();
+        $type     = $currency ? $currency->type : 1;
+        mailSend('deposit_success', [
+            'amount'      => plainAmount($deposit->amount, $type),
+            'charge'      => plainAmount($deposit->charge ?? 0, $type),
+            'curr'        => $currency ? $currency->code : '',
+            'method'      => $gateway ? $gateway->name : '-',
+            'trnx'        => $deposit->txn_id,
+            'new_balance' => $wallet ? plainAmount($wallet->balance, $type) : '',
+            'date_time'   => dateFormat($deposit->created_at ?? now())
+        ], $user);
+    } catch (\Throwable $th) {
+        // a notification must never break the deposit
+    }
+}
+
+/**
+ * Tell the user their manual deposit request was received and waits for admin approval (template: deposit_pending).
+ */
+function notifyUserDepositPending($deposit, $user)
+{
+    try {
+        $currency = \App\Models\Currency::find($deposit->currency_id);
+        $gateway  = \App\Models\PaymentGateway::find($deposit->method);
+        $type     = $currency ? $currency->type : 1;
+        $charge   = (float) ($deposit->charge ?? 0);
+        mailSend('deposit_pending', [
+            'amount'    => plainAmount($deposit->amount, $type),
+            'charge'    => plainAmount($charge, $type),
+            'credit'    => plainAmount((float) $deposit->amount - $charge, $type),
+            'curr'      => $currency ? $currency->code : '',
+            'method'    => $gateway ? $gateway->name : '-',
+            'trnx'      => $deposit->txn_id,
+            'date_time' => dateFormat($deposit->created_at ?? now())
+        ], $user);
+    } catch (\Throwable $th) {
+        // a notification must never break the deposit request
+    }
+}
+
+/**
+ * Public status word of an escrow, as shown to merchants by the escrow API.
+ * 0 held | 1 released | 3 disputed | 4 closed/returned (refunded to buyer, or released by admin)
+ */
+function escrowApiStatus($escrow)
+{
+    switch ((int) $escrow->status) {
+        case 0:  return 'held';
+        case 1:  return 'released';
+        case 3:  return 'disputed';
+        case 4:
+            if (!$escrow->returned_to) return 'closed';
+            $buyer = optional($escrow->user)->email;
+            return ($buyer && strcasecmp($escrow->returned_to, $buyer) === 0) ? 'refunded' : 'released_by_admin';
+    }
+    return 'unknown';
+}
+
+/** Only allow http(s) webhooks that do not point at private or internal addresses (SSRF protection). */
+function isSafeWebhookUrl($url)
+{
+    $parts = parse_url($url);
+    if (!$parts || empty($parts['host']) || !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'])) return false;
+    $host = $parts['host'];
+    $ips  = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : (gethostbynamel($host) ?: []);
+    if (!$ips) return false;
+    foreach ($ips as $ip) {
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
+    }
+    return true;
+}
+
+/** POST form-encoded params to a merchant URL, signed with HMAC-SHA256 (header X-DroppCash-Signature: sha256=...). */
+function postSignedWebhook($url, array $params, $secret)
+{
+    try {
+        if (!isSafeWebhookUrl($url)) return false;
+        $body = http_build_query($params);
+        Http::withHeaders([
+                'X-DroppCash-Signature' => 'sha256=' . hash_hmac('sha256', $body, $secret),
+                'X-DroppCash-Event'     => $params['event'] ?? '',
+            ])
+            ->withBody($body, 'application/x-www-form-urlencoded')
+            ->timeout(10)
+            ->post($url);
+        return true;
+    } catch (\Throwable $th) {
+        return false;      // a merchant server problem must never break an escrow action
+    }
+}
+
+/** Send an escrow event for an API escrow payment (App\Models\MerchantPayment) to the merchant's web_hook. */
+function sendEscrowEvent($payment, $event, $status, array $extra = [])
+{
+    try {
+        if (!$payment || !$payment->web_hook) return false;
+        $cred = \App\Models\ApiCreds::where('merchant_id', $payment->merchant_id)->first();
+        if (!$cred) return false;
+        $currency = \App\Models\Currency::find($payment->currency_id);
+        $params = array_merge([
+            'event'      => $event,
+            'status'     => $status,
+            'payment_id' => $payment->payment_id,
+            'escrow_id'  => (string) $payment->escrow_id,
+            'amount'     => plainAmount($payment->amount, $currency ? $currency->type : 1),
+            'currency'   => $currency ? $currency->code : '',
+            'custom'     => $payment->custom,
+            'test'       => $payment->mode == 1 ? 0 : 1,
+            'date'       => now()->toIso8601String(),
+        ], $extra);
+        return postSignedWebhook($payment->web_hook, $params, $cred->access_key);
+    } catch (\Throwable $th) {
+        return false;
+    }
+}
+
+/** Tell the merchant (if this escrow was created through the escrow checkout API) that something happened to it. */
+function notifyEscrowWebhook($escrow, $event)
+{
+    try {
+        $escrow  = \App\Models\Escrow::find($escrow->id);
+        $payment = \App\Models\MerchantPayment::where('escrow_id', (string) $escrow->id)->where('is_escrow', 1)->first();
+        if (!$payment) return false;
+        return sendEscrowEvent($payment, $event, escrowApiStatus($escrow), ['transaction' => $escrow->trnx]);
+    } catch (\Throwable $th) {
+        return false;
+    }
+}
+
+/** Everything the buyer paid for an escrow: the amount, plus the escrow fee when the buyer paid it (pay_charge). */
+function escrowPaidByBuyer($escrow)
+{
+    $type  = optional($escrow->currency)->type ?: 1;
+    $total = (float) $escrow->amount + ($escrow->pay_charge ? (float) $escrow->charge : 0);
+    return amount($total, $type, 2);
+}
+
+function mailSend($key, array $data, $user)
+{
+
+    $gs = GeneralSetting::first();
+    $template =  EmailTemplate::where('email_type', $key)->first();
+
+    if($gs->email_notify){
+        $message = str_replace('{name}', $user->name, $template->email_body);
+    
+        foreach ($data as $key => $value) {
+            $message = str_replace("{" . $key . "}", $value, $message);
+        }
+    
+        if ($gs->mail_type == 'php_mail') {
+            $headers = "From: $gs->sitename <$gs->email_from> \r\n";
+            $headers .= "Reply-To: $gs->sitename <$gs->email_from> \r\n";
+            $headers .= "MIME-Version: 1.0\r\n";
+            $headers .= "Content-Type: text/html; charset=utf-8\r\n";
+            @mail($user->email, $template->email_subject, $message, $headers);
+        } else {
+            $mail = new PHPMailer(true);
+    
+            try {
+               // $mail->isSMTP();
+                $mail->Host       = $gs->smtp_host;
+                $mail->SMTPAuth   = true;
+                $mail->Username   = $gs->smtp_user;
+                $mail->Password   = $gs->smtp_pass;
+                if ($gs->mail_encryption == 'ssl') {
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+                } else {
+                    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+                }
+                $mail->Port       = $gs->smtp_port;
+                $mail->CharSet = 'UTF-8';
+                $mail->setFrom($gs->from_email, $gs->from_name);
+                $mail->addAddress($user->email, $user->name);
+                $mail->addReplyTo($gs->from_email, $gs->from_name);
+                $mail->isHTML(true);
+                $mail->Subject = $template->email_subject;
+                $mail->Body    = $message;
+                $mail->send();
+            } catch (Exception $e) {
+               // throw new Exception($e);
+            }
+        }
+    }
+
+    if($gs->sms_notify){
+        $message = str_replace('{name}', $user->name, $template->sms);
+        foreach ($data as $key => $value) {
+            $message = str_replace("{" . $key . "}", $value, $message);
+        }
+        sendSMS($user->phone,$message,$gs->contact_no);
+    }
+    
+}
+
+function sendSMS($recipient,$message,$from){
+    $sg = SmsGateway::where('status',1)->first();
+    try {
+        if($sg->name == 'Nexmo')       nexmo($recipient,$message,$from,$sg->config);
+        else if($sg->name == 'Twilio') twilio($recipient,$message,$sg->config);
+    } catch (\Throwable $th) {
+        
+    }
+    
+}
+
+function twilio($recipient,$message,$config){
+    $sid = $config->sid;
+    $token = $config->token;
+    $from_number = $config->from_number;
+
+    $client = new Client($sid, $token);
+    $client->messages->create(
+        '+'.$recipient,
+        array(
+            'from' => $from_number,
+            'body' => $message
+        )
+    );
+}
+
+function nexmo(string $recipient,$message,$from,$config){
+    $basic  = new \Vonage\Client\Credentials\Basic($config->api_key, $config->api_secret);
+    $client = new \Vonage\Client($basic);
+    $client->sms()->send(
+        new \Vonage\SMS\Message\SMS($recipient, $from, $message)
+    );
+    
+}
+
+
+function access($permission){
+    return admin()->can($permission);
+}
+
+
+//gateway helpers
+
+ function storePrice($amount){
+     
+     $curr = Session::has('currency') ? Session::get('currency') : Currency::whereDefault(1)->first(); 
+     return $amount;
+}
+
+ function setCurrencyPrice($amount){
+     $curr = Session::has('currency') ? Currency::findOrFail(Session::get('currency')) : Currency::whereDefault(1)->first(); 
+    return $curr->symbol . round($amount * $curr->rate , 2);
+}
+
+function getCurrencyCode(){
+    $curr = Session::has('currency') ? Session::get('currency') : Currency::whereDefault(1)->first(); 
+    return $curr->code;
+}
+
+function sessionCurrency(){
+    $curr = Session::has('currency') ? Session::get('currency') : Currency::whereDefault(1)->first(); 
+    return json_encode($curr);
+}
+
+function loginIp(){
+    $info = unserialize(file_get_contents('http://www.geoplugin.net/php.gp?ip='.$_SERVER['REMOTE_ADDR']));
+    return json_decode(json_encode($info));
+}
+
+function filter($key, $value)
+{
+    $queries = request()->query();
+    if(count($queries) > 0) $delimeter = '&';
+    else  $delimeter = '?';
+    
+    if(request()->has($key)){
+      $url = request()->getRequestUri();
+      $pattern = "\?$key";
+      $match = preg_match("/$pattern/",$url);
+      if($match != 0) return  preg_replace('~(\?|&)'.$key.'[^&]*~', "\?$key=$value", $url);
+      $filteredURL = preg_replace('~(\?|&)'.$key.'[^&]*~', '', $url);
+      return  $filteredURL.$delimeter."$key=$value";
+    }
+    return  request()->getRequestUri().$delimeter."$key=$value";
+    
+
+}
+
+function generateQR($data){
+    $data = urlencode($data);
+    return "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={$data}";
+}
+
+
+function diffTime($time)
+{
+    return Carbon::parse($time)->diffForHumans();
+}
+
+function amountConv($amount, $currency, $type = null){
+    return amount($amount/$currency->rate,$currency->type,2);
+}
+
+function defaultCurr(){
+    return Currency::where('default',1)->first();   
+}
+
+

@@ -1,0 +1,2 @@
+[13-Oct-2026 20:19:35 UTC] PHP Warning:  require(/home/droppca1/public_html/project/vendor/composer/../../app/Helpers/helpers.php): failed to open stream: No such file or directory in /home/droppca1/public_html/project/vendor/composer/autoload_real.php on line 71
+[13-Oct-2026 20:19:35 UTC] PHP Fatal error:  require(): Failed opening required '/home/droppca1/public_html/project/vendor/composer/../../app/Helpers/helpers.php' (include_path='.:/opt/alt/php74/usr/share/pear') in /home/droppca1/public_html/project/vendor/composer/autoload_real.php on line 71
