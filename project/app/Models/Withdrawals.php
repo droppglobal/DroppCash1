@@ -10,6 +10,10 @@ class Withdrawals extends Model
     use HasFactory;
     protected $with = ['currency'];
 
+    protected $casts = [
+        'payout_at' => 'datetime',
+    ];
+
     public function method()
     {
         return $this->belongsTo(Withdraw::class,'method_id')->withDefault();

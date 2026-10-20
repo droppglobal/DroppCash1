@@ -12,6 +12,8 @@ use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 
 
+use Illuminate\Support\Facades\DB;
+
 class WithdrawalController extends Controller
 {
     public function withdrawForm()
@@ -59,8 +61,12 @@ class WithdrawalController extends Controller
             return back()->with('error','Insufficient balance');
         }
 
-        $wallet->balance -=  $finalAmount;
-        $wallet->save();
+        $txResponse = DB::transaction(function () use (&$charge, &$finalAmount, &$method, &$request, &$wallet, &$withdraw) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$wallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return back()->with('error','Insufficient balance.');
+        }
+        $wallet->refresh();
         
         $withdraw              = new Withdrawals();
         $withdraw->trx         = str_rand();
@@ -72,6 +78,45 @@ class WithdrawalController extends Controller
         $withdraw->total_amount= $finalAmount;
         $withdraw->user_data   = $request->user_data;
         $withdraw->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
+
+        try {
+            $type = $wallet->currency->type;
+            @mailSend('withdraw_request_user',[
+                'amount'    => plainAmount($request->amount,$type),
+                'charge'    => plainAmount($charge,$type),
+                'total'     => plainAmount($finalAmount,$type),
+                'curr'      => $wallet->currency->code,
+                'method'    => $method->name,
+                'trnx'      => $withdraw->trx,
+                'balance'   => plainAmount($wallet->balance,$type),
+                'date_time' => dateFormat($withdraw->created_at)
+            ],auth()->user());
+        } catch (\Throwable $th) {
+            // never block the withdrawal request because of an email problem
+        }
+
+        try {
+            $requester = auth()->user();
+            $type      = $wallet->currency->type;
+            notifyAdmins('withdraw_request',[
+                'requester'       => e($requester->name),
+                'requester_email' => e($requester->email),
+                'requester_type'  => 'User',
+                'amount'          => plainAmount($request->amount,$type),
+                'charge'          => plainAmount($charge,$type),
+                'total'           => plainAmount($finalAmount,$type),
+                'curr'            => $wallet->currency->code,
+                'method'          => $method->name,
+                'trnx'            => $withdraw->trx,
+                'date_time'       => dateFormat($withdraw->created_at),
+                'link'            => route('admin.withdraw.pending')
+            ]);
+        } catch (\Throwable $th) {
+            // never block the withdrawal request because of an email problem
+        }
 
         return back()->with('success','Withdraw request has been submitted successfully.');
     }
@@ -142,13 +187,17 @@ class WithdrawalController extends Controller
             ]);
         }
 
-        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type);
-        $finalAmount =  amount($request->amount + $finalCharge, $currency->type);
+        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type,2);
+        $finalAmount =  amount($request->amount + $finalCharge, $currency->type,2);
     
         if($senderWallet->balance < $finalAmount) return back()->with('error','Insufficient balance.');
         
-        $senderWallet->balance -= $finalAmount;
-        $senderWallet->update();
+        $txResponse = DB::transaction(function () use (&$agent, &$agentWallet, &$currency, &$finalAmount, &$finalCharge, &$receiverTrnx, &$request, &$senderWallet, &$trnx) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$senderWallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return back()->with('error','Insufficient balance.');
+        }
+        $senderWallet->refresh();
 
         $trnx              = new Transaction();
         $trnx->trnx        = str_rand();
@@ -163,8 +212,8 @@ class WithdrawalController extends Controller
         $trnx->details     = trans('Cash out to '). $agent->email;
         $trnx->save();
 
-        $agentWallet->balance += $request->amount;
-        $agentWallet->update();
+        $agentWallet->increment('balance',$request->amount);   // atomic
+        $agentWallet->refresh();
 
         $receiverTrnx              = new Transaction();
         $receiverTrnx->trnx        = $trnx->trnx;
@@ -177,6 +226,9 @@ class WithdrawalController extends Controller
         $receiverTrnx->type        = '+';
         $receiverTrnx->details     = trans('Cash out from '). auth()->user()->email;
         $receiverTrnx->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
         try {
             @mailSend('cash_out_user',[

@@ -161,7 +161,7 @@ class VoucherController extends Controller
 
     public function reedemHistory()
     { 
-        $history = Voucher::where('status',1)->where('reedemed_by',auth()->id())->paginate(20);
+        $history = Voucher::where('status',1)->where('reedemed_by',auth()->id())->latest('updated_at')->paginate(20);
         return view('user.voucher.history',compact('history'));
     }
 }

@@ -79,12 +79,12 @@ class ManageInvoiceController extends Controller
             "subject" => trans('Invoice Payment'),
             'message' => trans('Hello')." $invoice->invoice_to,<br/></br>".
 
-                trans('You have pending payment of invoice')." <b>$invoice->number</b>.".trans('Please click the below link to complete your payment') .".<br/></br>".
+                trans('You have pending payment of invoice')." <b>$invoice->number</b>.".trans('Please click the link below to complete your payment') .".<br/></br>".
                 
                 trans('Invoice details').": <br/></br>".
                 
                 trans('Amount')  .":  $amount $currency->code <br/>".
-                trans('Payment Link')." :  <a href='$route' target='_blank'>".trans('Click To Payment')."</a><br/>".
+                trans('Payment Link')." :  <a href='$route' target='_blank'>".trans('Click To Pay')."</a><br/>".
                 trans('Time')." : $invoice->created_at,
 
             " 
@@ -228,12 +228,12 @@ class ManageInvoiceController extends Controller
             "subject" => trans('Invoice Payment'),
             'message' => trans('Hello')." $invoice->invoice_to,<br/></br>".
 
-                trans('You have pending payment of invoice')." <b>$invoice->number</b>.".trans('Please click the below link to complete your payment') .".<br/></br>".
+                trans('You have pending payment of invoice')." <b>$invoice->number</b>.".trans('Please click the link below to complete your payment') .".<br/></br>".
                 
                 trans('Invoice details').": <br/></br>".
                 
                 trans('Amount')  .":  $amount $currency->code <br/>".
-                trans('Payment Link')." :  <a href='$route' target='_blank'>".trans('Click To Payment')."</a><br/>".
+                trans('Payment Link')." :  <a href='$route' target='_blank'>".trans('Click To Pay')."</a><br/>".
                 trans('Time')." : $invoice->created_at,
 
             " 

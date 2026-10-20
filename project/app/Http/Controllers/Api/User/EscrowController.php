@@ -19,7 +19,7 @@ class EscrowController extends ApiController
 {
     public function index()
     {
-        $escrows = Escrow::where('user_id',auth()->id())->paginate(15);
+        $escrows = Escrow::where('user_id',auth()->id())->latest()->paginate(15);
         return $this->sendResponse(['escrows' => $escrows],'My escrows');  
     }
 

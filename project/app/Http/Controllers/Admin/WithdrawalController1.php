@@ -8,6 +8,8 @@ use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use App\Models\Wallet;
 
+use Illuminate\Support\Facades\DB;
+
 class WithdrawalController extends Controller
 {
     public function accepted()
@@ -28,8 +30,12 @@ class WithdrawalController extends Controller
 
     public function withdrawAccept(Withdrawals $withdraw)
     {
-        $withdraw->status = 1;
-        $withdraw->save();
+        $txResponse = DB::transaction(function () use (&$trnx, &$user, &$withdraw) {
+        // claim first: a withdrawal can be accepted only once
+        if(!Withdrawals::where('id',$withdraw->id)->where('status',0)->update(['status'=>1])){
+            return back()->with('error','This withdrawal has already been processed');
+        }
+        $withdraw->refresh();
        
         if($withdraw->user_id){
             $user = $withdraw->user;
@@ -76,8 +82,11 @@ class WithdrawalController extends Controller
             $trnx->details     = trans('Withdraw money');
             $trnx->save();
         }
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
-        @mailSend('accept_withdraw',['amount'=>amount($withdraw->amount,$withdraw->currency->type,2), 'method' => $withdraw->withdraw->name,'trnx'=> $trnx->trnx,'curr' => $withdraw->currency->code,'method'=>$withdraw->method->name,'charge'=> amount($withdraw->charge,$withdraw->currency->type,2),'data_time'=> dateFormat($trnx->created_at)], $user);
+        @mailSend('accept_withdraw',['amount'=>amount($withdraw->amount,$withdraw->currency->type,2), 'method' => $withdraw->withdraw->name,'trnx'=> $trnx->trnx,'curr' => $withdraw->currency->code,'method'=>$withdraw->method->name,'charge'=> amount($withdraw->charge,$withdraw->currency->type,2),'date_time'=> dateFormat($trnx->created_at)], $user);
 
         return back()->with('success','Withdraw Accepted Successfully');
     }
@@ -87,16 +96,19 @@ class WithdrawalController extends Controller
     {
         $request->validate(['reason_of_reject' => 'required']);
     
-        $withdraw->status = 2;
-        $withdraw->reject_reason = $request->reason_of_reject;
-        $withdraw->save();
+        $txResponse = DB::transaction(function () use (&$request, &$trnx, &$user, &$wallet, &$withdraw) {
+        // claim first: a withdrawal can be rejected (and refunded) only once, and never after it was accepted
+        if(!Withdrawals::where('id',$withdraw->id)->where('status',0)->update(['status'=>2,'reject_reason'=>$request->reason_of_reject])){
+            return back()->with('error','This withdrawal has already been processed');
+        }
+        $withdraw->refresh();
 
         if($withdraw->user_id){
             $user = $withdraw->user;
             $wallet = Wallet::where('user_id',$withdraw->user_id)->where('user_type',1)->where('currency_id',$withdraw->currency_id)->firstOrFail();
 
-            $wallet->balance += $withdraw->total_amount;
-            $wallet->save();
+            $wallet->increment('balance',$withdraw->total_amount);   // atomic
+            $wallet->refresh();
 
             $trnx              = new Transaction();
             $trnx->trnx        = str_rand();
@@ -114,8 +126,8 @@ class WithdrawalController extends Controller
             $user = $withdraw->merchant;
             $wallet = Wallet::where('user_id',$withdraw->merchant_id)->where('user_type',2)->where('currency_id',$withdraw->currency_id)->firstOrFail();
 
-            $wallet->balance += $withdraw->total_amount;
-            $wallet->save();
+            $wallet->increment('balance',$withdraw->total_amount);   // atomic
+            $wallet->refresh();
 
             $trnx              = new Transaction();
             $trnx->trnx        = str_rand();
@@ -133,8 +145,8 @@ class WithdrawalController extends Controller
             $user = $withdraw->agent;
             $wallet = Wallet::where('user_id',$withdraw->agent_id)->where('user_type',3)->where('currency_id',$withdraw->currency_id)->firstOrFail();
 
-            $wallet->balance += $withdraw->total_amount;
-            $wallet->save();
+            $wallet->increment('balance',$withdraw->total_amount);   // atomic
+            $wallet->refresh();
 
             $trnx              = new Transaction();
             $trnx->trnx        = str_rand();
@@ -149,8 +161,11 @@ class WithdrawalController extends Controller
             $trnx->save();
 
         }
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
-        @mailSend('reject_withdraw',['amount'=> amount($withdraw->amount,$withdraw->currency->type,2), 'method' => $withdraw->withdraw->name,'trnx'=> $trnx->trnx,'curr' => $withdraw->currency->code,'method'=>$withdraw->method->name,'reason'=>$withdraw->reject_reason,'data_time'=> dateFormat($trnx->created_at)],$user);
+        @mailSend('reject_withdraw',['amount'=> amount($withdraw->amount,$withdraw->currency->type,2), 'method' => $withdraw->withdraw->name,'trnx'=> $trnx->trnx,'curr' => $withdraw->currency->code,'method'=>$withdraw->method->name,'reason'=>$withdraw->reject_reason,'date_time'=> dateFormat($trnx->created_at)],$user);
 
         return back()->with('success','Withdraw Rejected Successfully');
     }

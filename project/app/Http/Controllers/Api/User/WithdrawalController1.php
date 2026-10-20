@@ -2,22 +2,23 @@
 
 namespace App\Http\Controllers\Api\User;
 
-use App\Models\Wallet;
-use App\Models\Withdraw;
-use App\Models\Withdrawals;
 use App\Models\Addon;
-use App\Models\Currency;
-use App\Models\Transaction;
 use App\Models\Agent;
+use App\Models\Wallet;
+use App\Models\Currency;
+use App\Models\Withdraw;
+use App\Models\Transaction;
+use App\Models\Withdrawals;
 use Illuminate\Http\Request;
-use App\Http\Controllers\Api\ApiController;
 use Illuminate\Support\Facades\Validator;
+use App\Http\Controllers\Api\ApiController;
+
+use Illuminate\Support\Facades\DB;
 
 class WithdrawalController extends ApiController
 {
     public function withdrawForm()
     {
-
         $success['wallets'] = Wallet::where('user_id',auth()->id())->where('user_type',1)->where('balance', '>', 0)->with(['currency'])->get();
         return $this->sendResponse($success,__('success'));
     }
@@ -68,8 +69,12 @@ class WithdrawalController extends ApiController
             return $this->sendError('Error',['Insufficient balance']);
         }
 
-        $wallet->balance -=  $finalAmount;
-        $wallet->save();
+        $txResponse = DB::transaction(function () use (&$charge, &$finalAmount, &$method, &$request, &$wallet, &$withdraw) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$wallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return $this->sendError('Error',['Insufficient balance.']);
+        }
+        $wallet->refresh();
         
         $withdraw              = new Withdrawals();
         $withdraw->trx         = str_rand();
@@ -81,17 +86,56 @@ class WithdrawalController extends ApiController
         $withdraw->total_amount= $finalAmount;
         $withdraw->user_data   = $request->user_data;
         $withdraw->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
+
+        try {
+            $type = $wallet->currency->type;
+            @mailSend('withdraw_request_user',[
+                'amount'    => plainAmount($request->amount,$type),
+                'charge'    => plainAmount($charge,$type),
+                'total'     => plainAmount($finalAmount,$type),
+                'curr'      => $wallet->currency->code,
+                'method'    => $method->name,
+                'trnx'      => $withdraw->trx,
+                'balance'   => plainAmount($wallet->balance,$type),
+                'date_time' => dateFormat($withdraw->created_at)
+            ],auth()->user());
+        } catch (\Throwable $th) {
+            // never block the withdrawal request because of an email problem
+        }
+
+        try {
+            $requester = auth()->user();
+            $type      = $wallet->currency->type;
+            notifyAdmins('withdraw_request',[
+                'requester'       => e($requester->name),
+                'requester_email' => e($requester->email),
+                'requester_type'  => 'User',
+                'amount'          => plainAmount($request->amount,$type),
+                'charge'          => plainAmount($charge,$type),
+                'total'           => plainAmount($finalAmount,$type),
+                'curr'            => $wallet->currency->code,
+                'method'          => $method->name,
+                'trnx'            => $withdraw->trx,
+                'date_time'       => dateFormat($withdraw->created_at),
+                'link'            => route('admin.withdraw.pending')
+            ]);
+        } catch (\Throwable $th) {
+            // never block the withdrawal request because of an email problem
+        }
 
         return $this->sendResponse(['success'],__('Withdraw request has been submitted successfully.'));
     }
 
     public function history()
     {
-        $success['withdrawals'] = Withdrawals::with('method:id,name')->where('user_id',auth()->id())->latest()->paginate(15);
+        $success['withdrawals'] = Withdrawals::where('user_id',auth()->id())->latest()->paginate(15);
         return $this->sendResponse($success,__('Withdraw history'));
     }
     
-        public function cashOutForm()
+    public function cashOutForm()
     {
         $addon = Addon::where('code','agent')->where('status',1)->first();
         if(!$addon){
@@ -105,8 +149,7 @@ class WithdrawalController extends ApiController
     
     public function cashOut(Request $request)
     {
-        
-        $validator = Validator::make($request->all(),[
+        $request->validate([
             'receiver'  => 'required|email',
             'wallet_id' => 'required|integer',
             'amount'    => 'required|numeric|gt:0' 
@@ -115,9 +158,6 @@ class WithdrawalController extends ApiController
             'wallet_id.required' => 'Wallet is required'
         ]);
 
-        if($validator->fails()){
-            return $this->sendError('Validation Error',$validator->errors());
-        }
       
         $agent = Agent::where('email',$request->receiver)->first();
         if(!$agent) return $this->sendError('Error',['Agent not found']);
@@ -153,13 +193,17 @@ class WithdrawalController extends ApiController
             ]);
         }
 
-        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type);
-        $finalAmount =  amount($request->amount + $finalCharge, $currency->type);
+        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type,2);
+        $finalAmount =  amount($request->amount + $finalCharge, $currency->type,2);
     
         if($senderWallet->balance < $finalAmount) return $this->sendError('error',['Insufficient balance.']);
         
-        $senderWallet->balance -= $finalAmount;
-        $senderWallet->update();
+        $txResponse = DB::transaction(function () use (&$agent, &$agentWallet, &$currency, &$finalAmount, &$finalCharge, &$receiverTrnx, &$request, &$senderWallet, &$trnx) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$senderWallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return $this->sendError('Error',['Insufficient balance.']);
+        }
+        $senderWallet->refresh();
 
         $trnx              = new Transaction();
         $trnx->trnx        = str_rand();
@@ -174,8 +218,8 @@ class WithdrawalController extends ApiController
         $trnx->details     = trans('Cash out to '). $agent->email;
         $trnx->save();
 
-        $agentWallet->balance += $request->amount;
-        $agentWallet->update();
+        $agentWallet->increment('balance',$request->amount);   // atomic
+        $agentWallet->refresh();
 
         $receiverTrnx              = new Transaction();
         $receiverTrnx->trnx        = $trnx->trnx;
@@ -188,6 +232,9 @@ class WithdrawalController extends ApiController
         $receiverTrnx->type        = '+';
         $receiverTrnx->details     = trans('Cash out from '). auth()->user()->email;
         $receiverTrnx->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
         try {
             @mailSend('cash_out_user',[
@@ -211,25 +258,6 @@ class WithdrawalController extends ApiController
         } catch (\Throwable $th) {
             
         }
-        
-        return $this->sendResponse(['success'],__('Cash out successful'));
-    }
-    
-    
-    public function checkAgent(Request $request){
-        $receiver['data'] = Agent::where('email',$request->receiver)->first();
-        if($receiver['data']){
-            return response($receiver);
-        }
-        return response(null);
-    }
-    
-    
-    public function checkReceiver(Request $request){
-        $receiver['data'] = Agent::where('email',$request->receiver)->first();
-        if($receiver['data']){
-            return $this->sendResponse(['Ajent exists'],'Valid receiver found.');
-        }
-        return $this->sendError('Receiver not found' ,['Ajent doesn\'t exist associate with this email.']);
+        $this->sendResponse(['success'],__('Cash out successful'));
     }
 }

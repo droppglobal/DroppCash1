@@ -126,6 +126,8 @@ Route::prefix('user')->name('user.')->middleware('maintenance')->group(function 
         //withdraw
         Route::get('withdraw-methods',  [WithdrawalController::class,'methods'])->name('withdraw.methods');
         Route::get('withdraw-history',  [WithdrawalController::class,'history'])->name('withdraw.history');
+        Route::get('instant-withdraw/banks',    [WithdrawalController::class,'instantBanks'])->name('instant.banks');
+        Route::post('instant-withdraw/resolve', [WithdrawalController::class,'instantResolve'])->name('instant.resolve')->middleware('throttle:20,1');
 
         //invoice
         Route::get('invoices',   [ManageInvoiceController::class,'index'])->name('invoice.index');

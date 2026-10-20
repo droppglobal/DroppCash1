@@ -19,7 +19,7 @@ class EscrowController extends Controller
 {
     public function index()
     {
-        $escrows = Escrow::where('user_id',auth()->id())->paginate(15);
+        $escrows = Escrow::where('user_id',auth()->id())->latest()->paginate(15);
         return view('user.escrow.index',compact('escrows'));  
     }
 

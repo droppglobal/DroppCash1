@@ -21,7 +21,7 @@ class WithdrawalController extends ApiController
 
     public function methods(Request $request)
     {
-        $success['methods'] = Withdraw::where('currency_id',$request->currency)->where('status',1)->get();
+        $success['methods'] = Withdraw::where('currency_id',$request->currency)->where('status',1)->where('is_instant',0)->get();   // instant Naira withdrawal is for users only
         if($success['methods']->isEmpty()){
             return $this->sendError('Error',['No withdraw methods found']);
         }
@@ -41,12 +41,12 @@ class WithdrawalController extends ApiController
             return $this->sendError('Validation Error',$validator->errors());
         }
 
-        $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',2)->first();
+        $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',2)->where('user_id',request()->user()->id)->first();   // must be the merchant's own wallet
         if(!$wallet){
             return $this->sendError('Error',['Wallet not found']);
         }
 
-        $method = Withdraw::where('id',$request->method_id)->where('currency_id',$wallet->currency_id)->first();
+        $method = Withdraw::where('id',$request->method_id)->where('currency_id',$wallet->currency_id)->where('status',1)->where('is_instant',0)->first();
         if(!$method){
             return $this->sendError('Error',['Withdraw method not found']);
         }

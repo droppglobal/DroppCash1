@@ -170,7 +170,7 @@ class VoucherController extends ApiController
 
     public function reedemHistory()
     { 
-        $success['history'] = Voucher::where('status',1)->where('reedemed_by',auth()->id())->paginate(20);
+        $success['history'] = Voucher::where('status',1)->where('reedemed_by',auth()->id())->latest('updated_at')->paginate(20);
         return $this->sendResponse($success,__('Voucher redeem history'));
     }
 }

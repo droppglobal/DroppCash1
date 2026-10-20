@@ -122,6 +122,8 @@ Route::prefix('user')->middleware('maintenance')->group(function () {
         //withdraw
         Route::get('withdraw-methods',  [UserWithdrawalController::class, 'methods']);
         Route::get('withdraw-history',  [UserWithdrawalController::class, 'history']);
+        Route::get('instant-withdraw/banks',    [UserWithdrawalController::class, 'instantBanks']);
+        Route::post('instant-withdraw/resolve', [UserWithdrawalController::class, 'instantResolve'])->middleware('throttle:20,1');
         Route::post('check/agent',      [UserWithdrawalController::class, 'checkReceiver']);
 
         //support ticket

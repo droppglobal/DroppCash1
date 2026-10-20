@@ -332,6 +332,8 @@ Route::prefix('admin')->name('admin.')->group(function () {
 
             Route::post('withdraw/reject/{withdraw}',[WithdrawalController::class,'withdrawReject'])->name('withdraw.reject')->middleware('permission:withdraw reject');
 
+            Route::post('withdraw/instant-check/{withdraw}',[WithdrawalController::class,'instantCheck'])->name('withdraw.instant.check')->middleware('permission:withdraw accept');
+
 
 
 

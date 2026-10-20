@@ -21,7 +21,7 @@ class WithdrawalController extends Controller
 
     public function methods(Request $request)
     {
-        $methods = Withdraw::where('currency_id',$request->currency)->where('status',1)->get();
+        $methods = Withdraw::where('currency_id',$request->currency)->where('status',1)->where('is_instant',0)->get();   // instant Naira withdrawal is for users only
         if($methods->isEmpty()) return response('empty');
         return response($methods);
     }
@@ -35,12 +35,12 @@ class WithdrawalController extends Controller
             'user_data' => 'required'
         ]);
 
-        $method = Withdraw::findOrFail($request->method_id);
+        $method = Withdraw::where('id',$request->method_id)->where('status',1)->where('is_instant',0)->firstOrFail();
         if(!$method){
             return back()->with('error','Withdraw method not found');
         }
 
-        $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',2)->first();
+        $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',2)->where('user_id',merchant()->id)->first();   // must be the merchant's own wallet
         if(!$wallet){
             return back()->with('error','Wallet not found');
         }

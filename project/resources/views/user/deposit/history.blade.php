@@ -42,6 +42,11 @@
                     </tbody>
                   </table>
                 </div>
+                @if ($deposits->hasPages())
+                    <div class="card-footer">
+                        {{$deposits->links()}}
+                    </div>
+                @endif
             </div>
         </div>
     </div>

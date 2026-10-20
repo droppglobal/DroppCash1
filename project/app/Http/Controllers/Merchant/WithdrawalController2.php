@@ -9,6 +9,8 @@ use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 
 
+use Illuminate\Support\Facades\DB;
+
 class WithdrawalController extends Controller
 {
     public function withdrawForm()
@@ -54,8 +56,12 @@ class WithdrawalController extends Controller
             return back()->with('error','Insufficient balance');
         }
 
-        $wallet->balance -=  $finalAmount;
-        $wallet->save();
+        $txResponse = DB::transaction(function () use (&$charge, &$finalAmount, &$method, &$request, &$wallet, &$withdraw) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$wallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return back()->with('error','Insufficient balance.');
+        }
+        $wallet->refresh();
         
         $withdraw              = new Withdrawals();
         $withdraw->trx         = str_rand();
@@ -67,10 +73,13 @@ class WithdrawalController extends Controller
         $withdraw->total_amount= $finalAmount;
         $withdraw->user_data   = $request->user_data;
         $withdraw->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
         try {
             $type = $wallet->currency->type;
-            @mailSend('withdraw_request',[
+            @mailSend('withdraw_request_user',[
                 'amount'    => plainAmount($request->amount,$type),
                 'charge'    => plainAmount($charge,$type),
                 'total'     => plainAmount($finalAmount,$type),
@@ -80,6 +89,26 @@ class WithdrawalController extends Controller
                 'balance'   => plainAmount($wallet->balance,$type),
                 'date_time' => dateFormat($withdraw->created_at)
             ],merchant());
+        } catch (\Throwable $th) {
+            // never block the withdrawal request because of an email problem
+        }
+
+        try {
+            $requester = merchant();
+            $type      = $wallet->currency->type;
+            notifyAdmins('withdraw_request',[
+                'requester'       => e($requester->name),
+                'requester_email' => e($requester->email),
+                'requester_type'  => 'Merchant',
+                'amount'          => plainAmount($request->amount,$type),
+                'charge'          => plainAmount($charge,$type),
+                'total'           => plainAmount($finalAmount,$type),
+                'curr'            => $wallet->currency->code,
+                'method'          => $method->name,
+                'trnx'            => $withdraw->trx,
+                'date_time'       => dateFormat($withdraw->created_at),
+                'link'            => route('admin.withdraw.pending')
+            ]);
         } catch (\Throwable $th) {
             // never block the withdrawal request because of an email problem
         }

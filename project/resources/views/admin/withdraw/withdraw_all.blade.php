@@ -69,6 +69,21 @@
                                         @else
                                             <span class="badge badge-warning">@lang('Pending')</span>
                                         @endif
+
+                                        @if($withdrawlog->instant)
+                                            <div class="small mt-1">
+                                                @if($withdrawlog->payout_status == 'review')
+                                                    <span class="badge badge-info">@lang('Instant: needs your review')</span>
+                                                @elseif(in_array($withdrawlog->payout_status,['processing','queued']))
+                                                    <span class="badge badge-primary">@lang('Instant: sent to Flutterwave')</span>
+                                                @elseif($withdrawlog->payout_status == 'completed')
+                                                    <span class="badge badge-success">@lang('Instant: paid')</span>
+                                                @elseif($withdrawlog->payout_status == 'failed')
+                                                    <span class="badge badge-dark">@lang('Instant: failed, refunded')</span>
+                                                @endif
+                                                @if($withdrawlog->payout_message)<br>{{ $withdrawlog->payout_message }}@endif
+                                            </div>
+                                        @endif
                                     </td>
 
                                     <td data-label="@lang('Action')">
@@ -77,9 +92,16 @@
                                             <button class="btn btn-info details m-1 btn-sm" data-user_data="{{$withdrawlog->user_data}}" data-transaction="{{$withdrawlog->trx}}" data-provider="{{$withdrawlog->userDetails()->email}}" data-method_name="{{$withdrawlog->method->name}}" data-date="{{ __($withdrawlog->created_at->format('d F Y')) }}">@lang('Details')</button>
 
                                             @if($withdrawlog->status == 0)
-                                                <button class="btn btn-primary accept m-1 btn-sm" data-url="{{route('admin.withdraw.accept', $withdrawlog)}}" >@lang('Accept')</button>
-                                            
-                                                <button class="btn btn-danger reject m-1 btn-sm" data-url="{{route('admin.withdraw.reject',$withdrawlog)}}">@lang('Reject')</button>
+                                                @if($withdrawlog->instant && in_array($withdrawlog->payout_status,['processing','queued']))
+                                                    <form action="{{route('admin.withdraw.instant.check',$withdrawlog)}}" method="post" class="m-1">
+                                                        @csrf
+                                                        <button type="submit" class="btn btn-secondary btn-sm">@lang('Check status')</button>
+                                                    </form>
+                                                @else
+                                                    <button class="btn btn-primary accept m-1 btn-sm" data-url="{{route('admin.withdraw.accept', $withdrawlog)}}" >@if($withdrawlog->instant) @lang('Approve and send') @else @lang('Accept') @endif</button>
+
+                                                    <button class="btn btn-danger reject m-1 btn-sm" data-url="{{route('admin.withdraw.reject',$withdrawlog)}}">@lang('Reject')</button>
+                                                @endif
                                             @endif
                                         </div>
                                     </td>

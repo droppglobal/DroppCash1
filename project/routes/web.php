@@ -76,6 +76,7 @@ Route::get('notify/stripe',      [Stripe::class, 'notify'])->name('stripe.notify
 Route::post('notify/paytm',      [Paytm::class, 'notify'])->name('paytm.notify');
 Route::post('notify/razorpay',   [Razorpay::class, 'notify'])->name('razorpay.notify');
 Route::match(['get','post'],'notify/flutterwave',[Flutterwave::class,'notify'])->name('flutterwave.notify');
+Route::match(['get','post'],'notify/flutterwave-payout',[\App\Http\Controllers\Gateway\FlutterwavePayoutController::class,'notify'])->name('flutterwave.payout.notify');
 Route::get('notify/instamojo',   [Instamojo::class, 'notify'])->name('notify.instamojo');
 Route::post('notify/coingate', [Coingate::class, 'notify'])->name('notify.coingate');
 

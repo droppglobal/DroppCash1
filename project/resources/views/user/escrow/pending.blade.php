@@ -69,6 +69,11 @@
                         </tbody>
                     </table>
                     </div>
+                    @if ($escrows->hasPages())
+                        <div class="card-footer">
+                            {{$escrows->links()}}
+                        </div>
+                    @endif
                 </div>
             </div>
         </div>

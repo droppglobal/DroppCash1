@@ -56,12 +56,31 @@
                                 <p class="instruction mt-2"></p>
                             </div>
 
-                            <div class="mt-3 text-center">
+                            <div class="mt-3 text-center manual-box">
                                 <h5 class="text-danger">
                                     @lang('Provide your withdraw account details.')
                                 </h5>
 
                                 <textarea name="user_data" id="" class="form-control shadow-none" cols="30" rows="10" required></textarea>
+                            </div>
+
+                            {{-- instant Naira withdrawal: pick the bank, we verify the account --}}
+                            <div class="mt-3 instant-box d-none">
+                                <h5 class="text-danger text-center">@lang('Send to your bank account')</h5>
+                                <input type="hidden" name="user_data" id="instant_user_data" value="Instant bank transfer" disabled>
+                                <div class="row">
+                                    <div class="col-md-6 mb-2">
+                                        <div class="form-label">@lang('Bank')</div>
+                                        <select name="bank_code" class="form-select bank shadow-none" disabled>
+                                            <option value="">@lang('Loading banks...')</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6 mb-2">
+                                        <div class="form-label">@lang('Account number')</div>
+                                        <input type="text" name="account_number" class="form-control account shadow-none" maxlength="10" inputmode="numeric" autocomplete="off" placeholder="0123456789" disabled>
+                                    </div>
+                                </div>
+                                <div class="instant-result mt-2"></div>
                             </div>
                         </div>
                       
@@ -81,6 +100,7 @@
                                 <div class="modal-body text-center py-4">
                                 <i  class="fas fa-info-circle fa-3x text-primary mb-2"></i>
                                 <h3>@lang('Confirm Withdraw')</h3>
+                                <div class="instant-confirm small mt-2"></div>
                                
                                 </div>
                                 <div class="modal-footer">
@@ -122,7 +142,7 @@
                 return false;
             }
 
-            $.get('{{route('user.withdraw.methods')}}',{currency:$('.wallet option:selected').data('currency')},function (res) { 
+            $.get('{{route('user.withdraw.methods')}}',{currency:$('.wallet option:selected').data('currency'),instant:1},function (res) { 
                 if(res == 'empty'){
                     toast('error','@lang('No withdraw method found associate with this currency.')')
                     $('.method').attr('disabled',true)
@@ -131,7 +151,7 @@
 
                 var html = `<option value="">@lang('Select')</option>`;
                 $.each(res, function (i, val) { 
-                    html += `<option value="${val.id}" data-min="${val.min_amount}" data-max="${val.max_amount}" data-fixed="${val.fixed_charge}" data-percent="${val.percent_charge}" data-ins="${val.withdraw_instruction}">${val.name}</option>`
+                    html += `<option value="${val.id}" data-min="${val.min_amount}" data-max="${val.max_amount}" data-fixed="${val.fixed_charge}" data-percent="${val.percent_charge}" data-ins="${val.withdraw_instruction}" data-instant="${val.is_instant}">${val.name}</option>`
                 });
 
                 $('.method').attr('disabled',false)
@@ -180,6 +200,7 @@
             $('.exCharge').text(totalCharge +' '+ code)
             $('.total_amount').text(amount+totalCharge +' '+ code)
             $('.instruction').html(selected.data('ins'))
+            setMode(selected)
         })
 
         $('.confirm').on('click',function () { 
@@ -199,7 +220,94 @@
                 toast('error','@lang('Please select the wallet first.')')
                 return false;
             }
+            if(selectedMethod.data('instant') == 1){
+                if(!instantVerified){
+                    toast('error','@lang('Please choose your bank and enter a valid account number first.')')
+                    return false;
+                }
+                $('.instant-confirm').html(esc('@lang('Send to')')+' <strong>'+esc(instantQuote.account_name)+'</strong> ('+esc($('.bank option:selected').text())+')<br>'
+                    + esc('@lang('Total taken from your wallet')')+': <strong>'+esc(instantQuote.total)+' NGN</strong>')
+            } else {
+                $('.instant-confirm').html('')
+            }
             $('#modal-success').modal('show')
         })
+
+        // ---------------- instant Naira withdrawal ----------------
+        var instantVerified = false, instantQuote = null, banksLoaded = false, verifyTimer = null;
+
+        function esc(s){ return $('<div>').text(s == null ? '' : String(s)).html() }
+
+        function loadBanks(){
+            if(banksLoaded) return;
+            $.get('{{route('user.instant.banks')}}',function (r) {
+                if(!r.ok){
+                    toast('error','@lang('Instant withdrawal is temporarily unavailable.')')
+                    return;
+                }
+                var sel = $('.bank').empty().append($('<option>').val('').text('@lang('Select bank')'));
+                $.each(r.banks,function (i,b) { sel.append($('<option>').val(b.code).text(b.name)) })
+                banksLoaded = true;
+            })
+        }
+
+        function setMode(selected){
+            var instant = selected.data('instant') == 1;
+            instantVerified = false; instantQuote = null;
+            $('.instant-result').html('')
+            if(instant){
+                $('.manual-box').addClass('d-none')
+                $('.manual-box textarea').prop('required',false).prop('disabled',true)
+                $('.instant-box').removeClass('d-none')
+                $('.bank,.account,#instant_user_data').prop('disabled',false)
+                loadBanks()
+            }else{
+                $('.manual-box').removeClass('d-none')
+                $('.manual-box textarea').prop('required',true).prop('disabled',false)
+                $('.instant-box').addClass('d-none')
+                $('.bank,.account,#instant_user_data').prop('disabled',true)
+            }
+        }
+
+        function verifyAccount(){
+            var code = $('.bank').val(), acct = $('.account').val().trim();
+            instantVerified = false; instantQuote = null;
+            $('.instant-result').html('')
+            if(!code || !/^\d{10}$/.test(acct)){ return }
+            $('.instant-result').text('@lang('Checking the account...')')
+            $.post('{{route('user.instant.resolve')}}',{
+                _token: '{{csrf_token()}}', bank_code: code, account_number: acct,
+                amount: $('#amount').val(), method_id: $('.method').val()
+            },function (r) {
+                if(!r.ok){
+                    $('.instant-result').html('<div class="text-danger">'+esc(r.message)+'</div>')
+                    return;
+                }
+                instantVerified = true; instantQuote = r;
+                var html = '<div class="p-2 border rounded"><div>@lang('Account name')</div><strong>'+esc(r.account_name)+'</strong></div>';
+                html += r.match
+                    ? '<div class="text-success mt-1">@lang('The name matches your profile. Your money is sent to the bank instantly.')</div>'
+                    : '<div class="text-warning mt-1">@lang('This name does not match the name on your profile. Our team will review the withdrawal before it is paid.')</div>';
+                if(r.total !== undefined){
+                    $('.exCharge').text(r.charge+' NGN ('+'@lang('includes the bank transfer fee')'+': '+r.fee+')')
+                    $('.total_amount').text(r.total+' NGN')
+                }
+                $('.instant-result').html(html)
+            },'json').fail(function (xhr) {
+                var msg = xhr.status == 429 ? '@lang('Too many attempts. Please wait a minute.')' : '@lang('We could not check the account. Please try again.')';
+                $('.instant-result').html('<div class="text-danger">'+esc(msg)+'</div>')
+            })
+        }
+
+        $('.bank').on('change',verifyAccount)
+        $('.account').on('input',function () {
+            this.value = this.value.replace(/\D/g,'').slice(0,10)
+            clearTimeout(verifyTimer); verifyTimer = setTimeout(verifyAccount, 400)
+        })
+        // a new amount means a new fee: recalculate
+        $('#amount').on('change',function () {
+            if($('.method').val() != ''){ $('.method').trigger('change') }
+        })
+        $('#form').on('submit',function () { $(this).find('button[type=submit]').prop('disabled',true) })
    </script>
 @endpush

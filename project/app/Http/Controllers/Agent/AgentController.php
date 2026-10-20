@@ -177,7 +177,7 @@ class AgentController extends Controller
         $search = request('search');
         $requests = FundRequest::where('agent_id',agent()->id)->when($search,function($q) use($search){
             return $q->where('unique_code',$search);
-        })->paginate(15);
+        })->latest()->paginate(15);
         $currencies = Currency::where('status',1)->get();
         return view('agent.fund.requests',compact('requests','currencies'));
     }
