@@ -51,6 +51,48 @@ class InstantWithdrawal
         return ['ok' => false, 'message' => $message];
     }
 
+    /* --------------------------------------------------------------- owners */
+
+    /** Who is withdrawing: 1 = user, 2 = merchant, 3 = agent (the same numbers as wallets.user_type / transactions.user_type). */
+    public static function ownerType($owner)
+    {
+        if ($owner instanceof \App\Models\Merchant) {
+            return 2;
+        }
+        if ($owner instanceof \App\Models\Agent) {
+            return 3;
+        }
+        return 1;
+    }
+
+    /** The withdrawals column that holds the owner's id. */
+    public static function ownerColumn($type)
+    {
+        return [1 => 'user_id', 2 => 'merchant_id', 3 => 'agent_id'][$type];
+    }
+
+    /** The owner of a withdrawal row (same order the admin screens use). Returns [type, model]. */
+    public static function ownerOf(Withdrawals $w)
+    {
+        if ($w->user_id) {
+            return [1, $w->user];
+        }
+        if ($w->merchant_id) {
+            return [2, $w->merchant];
+        }
+        return [3, $w->agent];
+    }
+
+    /** Does the bank account holder's name match this person? Merchants and agents may also match on their business name. */
+    public static function ownerNameMatches($owner, $accountName)
+    {
+        if (InstantPayoutLogic::namesMatch($owner->name, $accountName)) {
+            return true;
+        }
+        $business = trim((string) ($owner->business_name ?? ''));
+        return self::ownerType($owner) !== 1 && $business !== '' && InstantPayoutLogic::namesMatch($business, $accountName);
+    }
+
     public static function banks()
     {
         $cached = Cache::get('flw_ng_banks');
@@ -95,7 +137,7 @@ class InstantWithdrawal
             'ok'           => true,
             'bank'         => $bank,
             'account_name' => $r['account_name'],
-            'match'        => InstantPayoutLogic::namesMatch($user->name, $r['account_name']),
+            'match'        => self::ownerNameMatches($user, $r['account_name']),
         ];
     }
 
@@ -117,7 +159,7 @@ class InstantWithdrawal
         if (!$method || !$method->is_instant || !$method->status) {
             return __('Instant withdrawal is not available.');
         }
-        if (!$wallet || $wallet->user_id != $user->id || $wallet->user_type != 1 || $wallet->currency_id != $method->currency_id) {
+        if (!$wallet || $wallet->user_id != $user->id || $wallet->user_type != self::ownerType($user) || $wallet->currency_id != $method->currency_id) {
             return __('Wallet not found');
         }
         if (optional($wallet->currency)->code !== 'NGN') {
@@ -130,7 +172,7 @@ class InstantWithdrawal
             return __('Please follow the limit');
         }
         if ((float) $method->daily_limit > 0) {
-            $today = Withdrawals::where('user_id', $user->id)->where('instant', 1)->where('payout_status', '!=', 'failed')
+            $today = Withdrawals::where(self::ownerColumn(self::ownerType($user)), $user->id)->where('instant', 1)->where('payout_status', '!=', 'failed')
                 ->where('created_at', '>=', now()->startOfDay())->sum('amount');
             if ($today + $amount > (float) $method->daily_limit) {
                 return __('You have reached the daily limit for instant withdrawals.');
@@ -178,7 +220,7 @@ class InstantWithdrawal
 
             $withdraw                  = new Withdrawals();
             $withdraw->trx             = str_rand();
-            $withdraw->user_id         = $user->id;
+            $withdraw->{self::ownerColumn(self::ownerType($user))} = $user->id;   // user_id, merchant_id or agent_id
             $withdraw->method_id       = $method->id;
             $withdraw->currency_id     = $wallet->currency_id;
             $withdraw->amount          = $amount;
@@ -357,7 +399,8 @@ class InstantWithdrawal
     public static function complete(Withdrawals $w, $message = '', $transferId = null)
     {
         $trnx = null;
-        $done = DB::transaction(function () use (&$w, &$trnx, &$message, &$transferId) {
+        list($ownerType, $owner) = self::ownerOf($w);
+        $done = DB::transaction(function () use (&$w, &$trnx, &$message, &$transferId, &$ownerType) {
             $claimed = Withdrawals::where('id', $w->id)->where('status', 0)->whereIn('payout_status', ['processing', 'queued', 'review'])
                 ->update(['status' => 1, 'payout_status' => 'completed', 'payout_message' => substr((string) $message ?: 'Paid', 0, 250), 'flw_transfer_id' => $transferId ?: $w->flw_transfer_id]);
             if (!$claimed) {
@@ -366,8 +409,8 @@ class InstantWithdrawal
             $w->refresh();
             $trnx              = new Transaction();
             $trnx->trnx        = str_rand();
-            $trnx->user_id     = $w->user_id;
-            $trnx->user_type   = 1;
+            $trnx->user_id     = $w->{self::ownerColumn($ownerType)};
+            $trnx->user_type   = $ownerType;
             $trnx->currency_id = $w->currency_id;
             $trnx->amount      = $w->amount;
             $trnx->charge      = $w->charge;
@@ -381,7 +424,7 @@ class InstantWithdrawal
         if ($done) {
             try {
                 @mailSend('accept_withdraw', ['amount' => amount($w->amount, $w->currency->type, 2), 'method' => $w->method->name, 'trnx' => $trnx->trnx, 'curr' => $w->currency->code,
-                    'charge' => amount($w->charge, $w->currency->type, 2), 'date_time' => dateFormat($trnx->created_at)], $w->user);
+                    'charge' => amount($w->charge, $w->currency->type, 2), 'date_time' => dateFormat($trnx->created_at)], $owner);
             } catch (\Throwable $th) {
                 // an email problem must never undo a payout
             }
@@ -393,7 +436,8 @@ class InstantWithdrawal
     public static function fail(Withdrawals $w, $reason = '', $transferId = null)
     {
         $trnx = null;
-        $done = DB::transaction(function () use (&$w, &$trnx, &$reason, &$transferId) {
+        list($ownerType, $owner) = self::ownerOf($w);
+        $done = DB::transaction(function () use (&$w, &$trnx, &$reason, &$transferId, &$ownerType) {
             $claimed = Withdrawals::where('id', $w->id)->where('status', 0)->whereIn('payout_status', ['processing', 'queued', 'review'])
                 ->update(['status' => 2, 'payout_status' => 'failed', 'reject_reason' => substr('Instant transfer failed: ' . ($reason ?: 'not completed'), 0, 250),
                           'payout_message' => substr((string) $reason, 0, 250), 'flw_transfer_id' => $transferId ?: $w->flw_transfer_id]);
@@ -401,14 +445,14 @@ class InstantWithdrawal
                 return false;
             }
             $w->refresh();
-            $wallet = Wallet::where('user_id', $w->user_id)->where('user_type', 1)->where('currency_id', $w->currency_id)->firstOrFail();
+            $wallet = Wallet::where('user_id', $w->{self::ownerColumn($ownerType)})->where('user_type', $ownerType)->where('currency_id', $w->currency_id)->firstOrFail();
             $wallet->increment('balance', $w->total_amount);   // atomic
             $wallet->refresh();
 
             $trnx              = new Transaction();
             $trnx->trnx        = str_rand();
-            $trnx->user_id     = $w->user_id;
-            $trnx->user_type   = 1;
+            $trnx->user_id     = $w->{self::ownerColumn($ownerType)};
+            $trnx->user_type   = $ownerType;
             $trnx->currency_id = $w->currency_id;
             $trnx->amount      = $w->amount;
             $trnx->charge      = 0;
@@ -422,7 +466,7 @@ class InstantWithdrawal
         if ($done) {
             try {
                 @mailSend('reject_withdraw', ['amount' => amount($w->amount, $w->currency->type, 2), 'method' => $w->method->name, 'trnx' => $trnx->trnx, 'curr' => $w->currency->code,
-                    'reason' => $w->reject_reason, 'date_time' => dateFormat($trnx->created_at)], $w->user);
+                    'reason' => $w->reject_reason, 'date_time' => dateFormat($trnx->created_at)], $owner);
             } catch (\Throwable $th) {
                 // an email problem must never undo a refund
             }
@@ -465,12 +509,13 @@ class InstantWithdrawal
     public static function alertAdmins(Withdrawals $w, $reason)
     {
         try {
-            $user = $w->user;
+            list($ownerType, $user) = self::ownerOf($w);
+            $label = [1 => 'User', 2 => 'Merchant', 3 => 'Agent'][$ownerType];
             notifyAdmins('instant_payout_alert', [
                 'reason'          => e($reason),
                 'trnx'            => $w->trx,
                 'amount'          => plainAmount($w->amount, 1),
-                'requester'       => e(optional($user)->name),
+                'requester'       => e(optional($user)->name) . ' - ' . $label,
                 'requester_email' => e(optional($user)->email),
                 'bank'            => e($w->bank_name),
                 'account'         => e($w->account_number),

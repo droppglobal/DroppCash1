@@ -68,6 +68,8 @@ Route::prefix('agent')->name('agent.')->middleware(['maintenance','agent_addon']
 
         Route::get('withdraw-methods',  [WithdrawalController::class,'methods'])->name('withdraw.methods');
         Route::get('withdraw-history',  [WithdrawalController::class,'history'])->name('withdraw.history');
+        Route::get('instant-withdraw/banks',    [WithdrawalController::class,'instantBanks'])->name('instant.banks');
+        Route::post('instant-withdraw/resolve', [WithdrawalController::class,'instantResolve'])->name('instant.resolve')->middleware('throttle:20,1');
 
         Route::get('download-qr/{email}',  [AgentController::class,'downloadQR'])->name('download.qr');
 

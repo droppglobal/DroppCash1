@@ -22,7 +22,7 @@ class WithdrawalController extends Controller
 
     public function methods(Request $request)
     {
-        $methods = Withdraw::where('currency_id',$request->currency)->where('status',1)->get();
+        $methods = Withdraw::where('currency_id',$request->currency)->where('status',1)->where('is_instant',0)->get();   // instant Naira withdrawal is for users only
         if($methods->isEmpty()) return response('empty');
         return response($methods);
     }
@@ -36,12 +36,12 @@ class WithdrawalController extends Controller
             'user_data' => 'required'
         ]);
 
-        $method = Withdraw::findOrFail($request->method_id);
+        $method = Withdraw::where('id',$request->method_id)->where('status',1)->where('is_instant',0)->firstOrFail();
         if(!$method){
             return back()->with('error','Withdraw method not found');
         }
 
-        $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',3)->first();
+        $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',3)->where('user_id',agent()->id)->first();   // must be the agent's own wallet
         if(!$wallet){
             return back()->with('error','Wallet not found');
         }
@@ -57,8 +57,12 @@ class WithdrawalController extends Controller
             return back()->with('error','Insufficient balance');
         }
 
-        $wallet->balance -=  $finalAmount;
-        $wallet->save();
+        $txResponse = DB::transaction(function () use (&$charge, &$finalAmount, &$method, &$request, &$wallet, &$withdraw) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$wallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return back()->with('error','Insufficient balance.');
+        }
+        $wallet->refresh();
         
         $withdraw              = new Withdrawals();
         $withdraw->trx         = str_rand();
@@ -70,6 +74,9 @@ class WithdrawalController extends Controller
         $withdraw->total_amount= $finalAmount;
         $withdraw->user_data   = $request->user_data;
         $withdraw->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
         try {
             $type = $wallet->currency->type;

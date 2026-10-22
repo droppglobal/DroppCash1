@@ -58,6 +58,19 @@
 
                                         @endif
                                     </div>
+                                    @if($item->instant)
+                                        <div class="small text-muted mt-1 text-center">
+                                            @if($item->payout_status == 'review')
+                                                @lang('Under review')
+                                            @elseif(in_array($item->payout_status,['processing','queued']))
+                                                @lang('Sent to your bank, waiting for confirmation')
+                                            @elseif($item->payout_status == 'completed')
+                                                @lang('Paid to') {{ $item->bank_name }} ****{{ substr($item->account_number,-4) }}
+                                            @elseif($item->payout_status == 'failed')
+                                                @lang('Money returned to your wallet')
+                                            @endif
+                                        </div>
+                                    @endif
                                 </td>
                                 <td data-label="@lang('Date')">{{dateFormat($item->created_at)}}</td>
                             </tr>

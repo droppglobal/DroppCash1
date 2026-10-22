@@ -6,6 +6,8 @@ use App\Models\Wallet;
 use App\Models\Withdraw;
 use App\Models\Transaction;
 use App\Models\Withdrawals;
+use App\Services\Flutterwave\InstantPayoutLogic;
+use App\Services\Flutterwave\InstantWithdrawal;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Http\Controllers\Controller;
@@ -22,9 +24,38 @@ class WithdrawalController extends Controller
 
     public function methods(Request $request)
     {
-        $methods = Withdraw::where('currency_id',$request->currency)->where('status',1)->where('is_instant',0)->get();   // instant Naira withdrawal is for users only
+        // the instant (Flutterwave) method is only offered to screens that can handle it, and only when Flutterwave is set up
+        $showInstant = $request->instant && InstantWithdrawal::secret() !== '';
+        $methods = Withdraw::where('currency_id',$request->currency)->where('status',1)
+            ->when(!$showInstant, function ($q) { return $q->where('is_instant',0); })->get();
         if($methods->isEmpty()) return response('empty');
         return response($methods);
+    }
+
+    // instant withdrawal: list of Nigerian banks
+    public function instantBanks()
+    {
+        $banks = InstantWithdrawal::banks();
+        return response()->json(['ok' => (bool) $banks, 'banks' => $banks ?: []]);
+    }
+
+    // instant withdrawal: verify the account, compare the name with the profile and quote the fee
+    public function instantResolve(Request $request)
+    {
+        $request->validate(['bank_code' => 'required', 'account_number' => 'required']);
+        $result = InstantWithdrawal::resolveAccount(agent(), (string) $request->bank_code, (string) $request->account_number);
+        if(!$result['ok']){
+            return response()->json($result);
+        }
+        $out = ['ok' => true, 'account_name' => $result['account_name'], 'match' => $result['match']];
+        $method = Withdraw::where('id',$request->method_id)->where('is_instant',1)->where('status',1)->first();
+        if($method && InstantPayoutLogic::validAmount($request->amount)){
+            $price = InstantWithdrawal::price($method,(float) $request->amount);
+            if($price['ok']){
+                $out += ['fee' => $price['fee'], 'charge' => $price['charge'], 'total' => $price['total']];
+            }
+        }
+        return response()->json($out);
     }
 
     public function withdrawSubmit(Request $request)
@@ -36,7 +67,7 @@ class WithdrawalController extends Controller
             'user_data' => 'required'
         ]);
 
-        $method = Withdraw::where('id',$request->method_id)->where('status',1)->where('is_instant',0)->firstOrFail();
+        $method = Withdraw::where('id',$request->method_id)->where('status',1)->first();
         if(!$method){
             return back()->with('error','Withdraw method not found');
         }
@@ -44,6 +75,12 @@ class WithdrawalController extends Controller
         $wallet = Wallet::where('id',$request->wallet_id)->where('user_type',3)->where('user_id',agent()->id)->first();   // must be the agent's own wallet
         if(!$wallet){
             return back()->with('error','Wallet not found');
+        }
+
+        // instant Naira withdrawal (paid by Flutterwave)
+        if($method->is_instant){
+            $result = InstantWithdrawal::create(agent(),$wallet,$method,$request->amount,(string) $request->bank_code,(string) $request->account_number);
+            return $result['ok'] ? back()->with('success',$result['message']) : back()->with('error',$result['message']);
         }
 
         if($request->amount < $method->min_amount || $request->amount > $method->max_amount){
@@ -120,7 +157,20 @@ class WithdrawalController extends Controller
     public function history(Request $request)
     {
         $search = $request->search;
-        $withdrawals = Withdrawals::when($search,function($q) use($search) {return $q->where('trx',$search);})->where('agent_id',agent()->id)->latest()->paginate(15);
+        $query = function () use ($search) {
+            return Withdrawals::when($search,function($q) use($search) {return $q->where('trx',$search);})->where('agent_id',agent()->id)->latest()->paginate(15);
+        };
+        $withdrawals = $query();
+        // instant withdrawals still waiting for Flutterwave: ask for the final answer now
+        $changed = false;
+        foreach($withdrawals as $item){
+            if($item->instant && in_array($item->payout_status,['processing','queued'])){
+                try { InstantWithdrawal::reconcile($item); $changed = true; } catch (\Throwable $th) { report($th); }
+            }
+        }
+        if($changed){
+            $withdrawals = $query();
+        }
         return view('agent.withdraw.history',compact('withdrawals','search'));
     }
 }

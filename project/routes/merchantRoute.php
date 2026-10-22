@@ -63,6 +63,8 @@ Route::prefix('merchant')->name('merchant.')->middleware('maintenance')->group(f
 
          Route::get('withdraw-methods',  [WithdrawalController::class,'methods'])->name('withdraw.methods');
          Route::get('withdraw-history',  [WithdrawalController::class,'history'])->name('withdraw.history');
+         Route::get('instant-withdraw/banks',    [WithdrawalController::class,'instantBanks'])->name('instant.banks');
+         Route::post('instant-withdraw/resolve', [WithdrawalController::class,'instantResolve'])->name('instant.resolve')->middleware('throttle:20,1');
 
          Route::get('api-key',  [MerchantController::class,'apiKeyForm'])->name('api.key.form');
          Route::post('generate-api-key',  [MerchantController::class,'apiKeyGenerate'])->name('api.key.generate');
