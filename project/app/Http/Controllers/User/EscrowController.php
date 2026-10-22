@@ -87,7 +87,7 @@ class EscrowController extends Controller
         $trnx->charge      = $finalCharge;
         $trnx->remark      = 'make_escrow';
         $trnx->type        = '-';
-        $trnx->details     = trans('Made escrow to '). $receiver->email;
+        $trnx->details     = trans('Made Escrow to '). $receiver->email;
         $trnx->save();
             return null;
         }, 3);
@@ -183,6 +183,7 @@ class EscrowController extends Controller
             return back()->with('error','Escrow not found');
         }
         $recipient = User::findOrFail($escrow->recipient_id);
+        $sender = User::findOrFail($escrow->user_id);   // user_id = the person who created/is releasing the escrow
         $recipientWallet = Wallet::where('user_id',$recipient->id)
                             ->where('user_type',1)
                             ->where('currency_id',$escrow->currency_id)
@@ -199,7 +200,7 @@ class EscrowController extends Controller
             );
         } 
 
-        $txResponse = DB::transaction(function () use (&$amount, &$escrow, &$recipient, &$recipientWallet, &$trnx) {
+        $txResponse = DB::transaction(function () use (&$amount, &$escrow, &$recipient, &$recipientWallet, &$sender, &$trnx) {
         // claim the escrow first: it can be released only once, even with parallel requests
         if(!Escrow::where('id',$escrow->id)->whereIn('status',[0,3])->update(['status'=>1])){
             return back()->with('error','Escrow not found');
@@ -220,7 +221,7 @@ class EscrowController extends Controller
         $trnx->charge      = $escrow->pay_charge == 0 ? $escrow->charge : 0;
         $trnx->remark      = 'make_escrow';
         $trnx->type        = '+';
-        $trnx->details     = trans('Received escrow money '). $recipient->email;
+        $trnx->details     = trans('Received Escrow from '). $sender->name;
         $trnx->save();
 
         $escrow->status = 1;

@@ -19,7 +19,7 @@ class EscrowController extends Controller
 {
     public function index()
     {
-        $escrows = Escrow::where('user_id',auth()->id())->paginate(15);
+        $escrows = Escrow::where('user_id',auth()->id())->latest()->paginate(15);
         return view('user.escrow.index',compact('escrows'));  
     }
 
@@ -53,9 +53,9 @@ class EscrowController extends Controller
         $currency = Currency::findOrFail($senderWallet->currency->id);
         $charge = charge('make-escrow');  
 
-        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type);
-        if($request->pay_charge) $finalAmount =  amount($request->amount + $finalCharge, $currency->type);
-        else  $finalAmount =  amount($request->amount, $currency->type);
+        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type,2);
+        if($request->pay_charge) $finalAmount =  amount($request->amount + $finalCharge, $currency->type,2);
+        else  $finalAmount =  amount($request->amount, $currency->type,2);
         
         if($senderWallet->balance < $finalAmount) return back()->with('error','Insufficient balance.');
         
@@ -145,7 +145,8 @@ class EscrowController extends Controller
             return back()->with('error','Invalid access');
         }
         if($escrow->status == 4) return back()->with('error','Dispute has been closed');
-        
+        if($escrow->status == 1) return back()->with('error','This escrow has already been released');
+
         $escrow->status = 3;
         if($escrow->dispute_created == null) $escrow->dispute_created = auth()->id();
         $escrow->save();
@@ -156,6 +157,7 @@ class EscrowController extends Controller
         $dispute->message = $request->message;
         if($request->file) $dispute->file = MediaHelper::handleMakeImage($request->file);
         $dispute->save();
+        notifyEscrowWebhook($escrow,'escrow.disputed');   // tell the merchant's website (escrow checkout API)
         return back()->with('success','Replied submitted');
     }
 
@@ -250,6 +252,7 @@ if(!empty($escrow->invoice_number)){
 }
         //if invoice
 
+        notifyEscrowWebhook($escrow,'escrow.released');   // tell the merchant's website (escrow checkout API)
         return back()->with('success','Escrow has been released');
 
     }

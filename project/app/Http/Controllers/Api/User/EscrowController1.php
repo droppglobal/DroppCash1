@@ -13,11 +13,13 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use App\Http\Controllers\Api\ApiController;
 
+use Illuminate\Support\Facades\DB;
+
 class EscrowController extends ApiController
 {
     public function index()
     {
-        $escrows = Escrow::with('recipient:id,email')->where('user_id',auth()->id())->paginate(15);
+        $escrows = Escrow::where('user_id',auth()->id())->latest()->paginate(15);
         return $this->sendResponse(['escrows' => $escrows],'My escrows');  
     }
 
@@ -54,14 +56,18 @@ class EscrowController extends ApiController
         $currency = Currency::findOrFail($senderWallet->currency->id);
         $charge = charge('make-escrow');  
 
-        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type);
-        if($request->pay_charge) $finalAmount =  amount($request->amount + $finalCharge, $currency->type);
-        else  $finalAmount =  amount($request->amount, $currency->type);
+        $finalCharge = amount(chargeCalc($charge,$request->amount,$currency->rate),$currency->type,2);
+        if($request->pay_charge) $finalAmount =  amount($request->amount + $finalCharge, $currency->type,2);
+        else  $finalAmount =  amount($request->amount, $currency->type,2);
         
         if($senderWallet->balance < $finalAmount) return $this->sendError('Error',['Insufficient balance.']);
         
-        $senderWallet->balance -= $finalAmount;
-        $senderWallet->update();
+        $txResponse = DB::transaction(function () use (&$currency, &$escrow, &$finalAmount, &$finalCharge, &$receiver, &$request, &$senderWallet, &$trnx) {
+        // atomic check-and-deduct: parallel requests cannot spend the same balance twice
+        if(!Wallet::where('id',$senderWallet->id)->where('balance','>=',$finalAmount)->decrement('balance',$finalAmount)){
+            return $this->sendError('Error',['Insufficient balance.']);
+        }
+        $senderWallet->refresh();
 
         $escrow               = new Escrow();
         $escrow->trnx         = str_rand();
@@ -86,6 +92,34 @@ class EscrowController extends ApiController
         $trnx->type        = '-';
         $trnx->details     = trans('Made escrow to '). $receiver->email;
         $trnx->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
+
+        try {
+            $type = $currency->type;
+            @mailSend('make_escrow',[
+                'amount'        => plainAmount($request->amount,$type),
+                'charge'        => plainAmount($finalCharge,$type),
+                'curr'          => $currency->code,
+                'to_user'       => $receiver->email,
+                'description'   => e($request->description),
+                'trnx'          => $escrow->trnx,
+                'after_balance' => plainAmount($senderWallet->balance,$type),
+                'date_time'     => dateFormat($escrow->created_at)
+            ],auth()->user());
+
+            @mailSend('receive_escrow',[
+                'amount'      => plainAmount($request->amount,$type),
+                'curr'        => $currency->code,
+                'from_user'   => auth()->user()->email,
+                'description' => e($request->description),
+                'trnx'        => $escrow->trnx,
+                'date_time'   => dateFormat($escrow->created_at)
+            ],$receiver);
+        } catch (\Throwable $th) {
+            // never block escrow creation because of an email problem
+        }
 
         return $this->sendResponse(['success'],'Escrow has been created successfully');
 
@@ -103,14 +137,7 @@ class EscrowController extends ApiController
         }
 
         $success['escrow']   = $escrow;
-        $success['messages'] = Dispute::where('escrow_id', $escrow->id)
-        ->with('user')
-        ->get()
-        ->map(function($item) {
-            $item['file'] = $item->file ? asset('assets/images/'.$item->file) : null;
-            return $item;
-        });
-        
+        $success['messages'] = Dispute::where('escrow_id',$escrow->id)->with('user')->get();
 
         return $this->sendResponse($success,'success');
     }
@@ -135,7 +162,8 @@ class EscrowController extends ApiController
         }
 
         if($escrow->status == 4) return $this->sendError('Error',['Dispute has been closed']);
-        
+        if($escrow->status == 1) return $this->sendError('Error',['This escrow has already been released']);
+
         $escrow->status = 3;
         if($escrow->dispute_created == null) $escrow->dispute_created = auth()->id();
         $escrow->save();
@@ -146,14 +174,12 @@ class EscrowController extends ApiController
         $dispute->message = $request->message;
         if($request->file) $dispute->file = MediaHelper::handleMakeImage($request->file);
         $dispute->save();
-        $success['message'] = $dispute;
-        if($request->file) {
-            $dispute['file'] = $dispute->file ? asset('assets/images/'.$dispute->file) : null;
-            $success['message'] = $dispute;
-        }
-        
+        notifyEscrowWebhook($escrow,'escrow.disputed');   // tell the merchant's website (escrow checkout API)
 
-        return $this->sendResponse($success,'Get Dispute Message');
+        $success['dispute_id'] = $dispute->id;
+        if($request->file) $success['file_download'] = route('user.escrow.file.download',$dispute->id);
+
+        return $this->sendResponse($success,'Replied successfully');
     }
 
     
@@ -182,11 +208,17 @@ class EscrowController extends ApiController
             );
         } 
 
+        $txResponse = DB::transaction(function () use (&$amount, &$escrow, &$recipient, &$recipientWallet, &$trnx) {
+        // claim the escrow first: it can be released only once, even with parallel requests
+        if(!Escrow::where('id',$escrow->id)->whereIn('status',[0,3])->update(['status'=>1])){
+            return $this->sendError('Error',['Escrow not found']);
+        }
+
         $amount = $escrow->amount;
         if($escrow->pay_charge == 0) $amount -= $escrow->charge;
         
-        $recipientWallet->balance += $amount;
-        $recipientWallet->update();
+        $recipientWallet->increment('balance',$amount);   // atomic
+        $recipientWallet->refresh();
 
         $trnx              = new Transaction();
         $trnx->trnx        = $escrow->trnx;
@@ -197,33 +229,39 @@ class EscrowController extends ApiController
         $trnx->charge      = $escrow->pay_charge == 0 ? $escrow->charge : 0;
         $trnx->remark      = 'make_escrow';
         $trnx->type        = '+';
-        $trnx->details     = trans('Received escrow money '). $recipient->email;
+        $trnx->details     = trans('Received escrow from '). $sender->name;
         $trnx->save();
 
         $escrow->status = 1;
         $escrow->save();
+            return null;
+        }, 3);
+        if($txResponse) return $txResponse;
 
+        try {
+            $type = $escrow->currency->type;
+            @mailSend('release_escrow',[
+                'amount'        => plainAmount($amount,$type),
+                'charge'        => plainAmount($escrow->pay_charge == 0 ? $escrow->charge : 0,$type),
+                'curr'          => $escrow->currency->code,
+                'from_user'     => auth()->user()->email,
+                'description'   => e($escrow->description),
+                'trnx'          => $escrow->trnx,
+                'after_balance' => plainAmount($recipientWallet->balance,$type),
+                'date_time'     => dateFormat(now())
+            ],$recipient);
+        } catch (\Throwable $th) {
+            // never block the release because of an email problem
+        }
+
+        notifyEscrowWebhook($escrow,'escrow.released');   // tell the merchant's website (escrow checkout API)
         return $this->sendResponse(['success'],'Escrow has been released');
 
     }
 
     public function pending()
     {
-        $escrows = Escrow::with('user:id,email')->where('recipient_id',auth()->id())->latest()->paginate(15);
+        $escrows = Escrow::where('recipient_id',auth()->id())->latest()->paginate(15);
         return $this->sendResponse(['escrows' => $escrows],'My escrows');  
-    }
-    
-    public function fileDownload($id)
-    {
-        $dispute = Dispute::findOrFail($id);
-        $filepath = 'assets/images/'.$dispute->file;
-        $extension = pathinfo($filepath, PATHINFO_EXTENSION);
-        $fileName =  @$dispute->user->email.'_file.'.$extension;
-        header('Content-type: application/octet-stream');
-        header("Content-Disposition: attachment; filename=".$fileName);
-        while (ob_get_level()) {
-            ob_end_clean();
-        }
-        readfile($filepath);
     }
 }

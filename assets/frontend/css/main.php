@@ -8,10 +8,21 @@ function checkColor($color){
 if(isset($_GET['color']) && $_GET['color'] != '' && checkColor("#".$_GET['color']))  $color = "#".$_GET['color'];
 else $color = "#5b53f1";
 
+// ---- banner palette, derived from the theme colour ----
+function dcHexToRgb($hex){ $hex = ltrim($hex, '#'); return [hexdec(substr($hex,0,2)), hexdec(substr($hex,2,2)), hexdec(substr($hex,4,2))]; }
+function dcRgbToHex($r,$g,$b){ return sprintf('#%02x%02x%02x', max(0,min(255,round($r))), max(0,min(255,round($g))), max(0,min(255,round($b)))); }
+function dcShade($hex,$pct){ list($r,$g,$b) = dcHexToRgb($hex); if($pct < 0){ $f = 1 + $pct; return dcRgbToHex($r*$f,$g*$f,$b*$f); } return dcRgbToHex($r+(255-$r)*$pct, $g+(255-$g)*$pct, $b+(255-$b)*$pct); }
+function dcLum($hex){ list($r,$g,$b) = dcHexToRgb($hex); return (0.2126*$r + 0.7152*$g + 0.0722*$b) / 255; }
+$dcDark     = dcLum($color) < 0.22;
+$bannerDeep = $dcDark ? $color : dcShade($color, -0.70);
+$bannerMid  = $dcDark ? dcShade($color, 0.10) : dcShade($color, -0.45);
+$bannerGlow = implode(',', dcHexToRgb($dcDark ? dcShade($color, 0.30) : dcShade($color, -0.10)));
+$bannerGold = '#c9a45c';
+
 
 ?>
 
-@import url("https://fonts.googleapis.com/css2?family=Inter&family=Manrope:wght@500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter&family=Manrope:wght@500;600;700;800&display=swap");
 
 html {
     font-size: 16px;
@@ -935,98 +946,266 @@ textarea {
         font-size: 14px;
     }
 }
-/*Banner Section Starts Here*/
-.banner__wrapper {
-    display: flex;
-    flex-wrap: wrap;
-}
-
-.banner__wrapper-content {
-    align-self: center;
-    width: 50%;
-    padding: 40px 0;
-    position: relative;
-    z-index: 1;
-}
-
-.banner__wrapper-content .subtitle {
-    margin-bottom: 5px;
-}
-
-.banner__wrapper-content .title {
-    margin-bottom: 25px;
-}
-
-.banner__wrapper-content p {
-    max-width: 600px;
-}
-
-@media (min-width: 576px) {
-    .banner__wrapper-content p {
-        font-size: 18px;
-        line-height: 1.6;
-    }
-}
-
-.banner__wrapper-thumb {
-    position: relative;
-    z-index: 1;
-}
-
-@media (min-width: 992px) {
-    .banner__wrapper {
-        min-height: 820px;
-    }
-
-    .banner__wrapper-thumb {
-        inset: 0 18px 0 50%;
-        position: absolute;
-    }
-}
-
-@media (min-width: 992px) and (max-width: 1199px) {
-    .banner__wrapper {
-        min-height: 700px;
-    }
-
-    .banner__wrapper-thumb {
-        inset: 0 0 0 50%;
-    }
-}
-
-@media (min-width: 992px) {
-    .banner__wrapper-thumb {
-        background: <?php echo $color ; ?>;
-        mask: url(./img/banner-shape.png) no-repeat left bottom/cover;
-        -webkit-mask: url(./img/banner-shape.png) no-repeat left bottom/cover;
-    }
-
-    .banner__wrapper-thumb img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-}
-
-@media (max-width: 991px) {
-    .banner__wrapper-content {
-        width: 100%;
-        padding: 60px 0 30px;
-    }
-
-    .banner__wrapper-thumb {
-        mask: url(./img/banner-shape.png) no-repeat center center/contain;
-        -webkit-mask: url(./img/banner-shape.png) no-repeat center center/contain;
-    }
-
-    .banner__wrapper-thumb img {
-        width: 100%;
-    }
-}
-
+/*Banner Section Starts Here - classy hero*/
 .banner-section {
     position: relative;
     overflow: hidden;
+    isolation: isolate;
+    color: #fff;
+    background:
+        radial-gradient(780px 540px at 78% 40%, rgba(<?php echo $bannerGlow; ?>, .55), transparent 62%),
+        linear-gradient(135deg, <?php echo $bannerDeep; ?> 0%, <?php echo $bannerMid; ?> 100%);
+}
+
+/* fine dotted texture, fading out towards the edges */
+.banner-section::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: radial-gradient(rgba(255, 255, 255, .08) 1px, transparent 1.4px);
+    background-size: 26px 26px;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 38%, transparent 78%);
+    mask-image: linear-gradient(90deg, transparent 0%, #000 38%, transparent 78%);
+}
+
+/* gold hairline at the bottom edge */
+.banner-section::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, <?php echo $bannerGold; ?>, transparent);
+    opacity: .75;
+}
+
+.banner__wrapper {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 48px 40px;
+    padding: 84px 0 92px;
+}
+
+.banner__wrapper-content {
+    flex: 1 1 460px;
+    max-width: 610px;
+    position: relative;
+    z-index: 1;
+}
+
+.banner-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 22px;
+    font-family: "Manrope", sans-serif;
+    font-size: 12.5px;
+    font-weight: 700;
+    line-height: 1.4;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: <?php echo $bannerGold; ?>;
+}
+
+.banner-eyebrow::before {
+    content: "";
+    flex: none;
+    width: 34px;
+    height: 1px;
+    background: <?php echo $bannerGold; ?>;
+}
+
+.banner__wrapper-content .title {
+    margin: 0 0 26px;
+    font-family: "Manrope", sans-serif;
+    font-size: clamp(34px, 4.6vw, 60px);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -.025em;
+    color: #fff;
+}
+
+.banner-points {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 38px;
+    padding: 0;
+    list-style: none;
+}
+
+.banner-points li {
+    padding: 8px 16px;
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: .02em;
+    color: rgba(255, 255, 255, .9);
+    background: rgba(255, 255, 255, .06);
+    border: 1px solid rgba(255, 255, 255, .18);
+    border-radius: 999px;
+}
+
+.banner-store {
+    display: inline-block;
+    transition: transform .25s ease, filter .25s ease;
+}
+
+.banner-store img {
+    display: block;
+    width: auto;
+    height: 56px;
+    border-radius: 9px;
+}
+
+.banner-store:hover {
+    transform: translateY(-3px);
+    filter: brightness(1.08);
+}
+
+/* the picture (changed from the admin panel): any landscape or portrait photo works, it is cropped to the frame */
+.banner__wrapper-thumb {
+    position: relative;
+    isolation: isolate;
+    flex: 1 1 420px;
+    max-width: 590px;
+    margin-inline-start: auto;
+    padding-inline-end: 18px;
+    padding-bottom: 18px;
+}
+
+.banner-frame {
+    position: relative;
+    height: 0;
+    padding-bottom: 80%;      /* 5:4 picture frame (works in every browser) */
+    overflow: hidden;
+    background: #111;
+    border-radius: 150px 26px 26px 26px;
+    border-start-start-radius: 150px;
+    border-start-end-radius: 26px;
+    border-end-end-radius: 26px;
+    border-end-start-radius: 26px;
+    box-shadow: 0 40px 90px -20px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .14);
+}
+
+.banner-frame img {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 66% 30%;
+    transition: transform 1.2s ease;
+}
+
+.banner__wrapper-thumb:hover .banner-frame img {
+    transform: scale(1.03);
+}
+
+.banner-frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, .28) 100%);
+}
+
+/* offset gold outline behind the picture */
+.banner__wrapper-thumb::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    top: 18px;
+    bottom: 0;
+    inset-inline: 18px 0;
+    border: 1px solid rgba(201, 164, 92, .7);
+    border-radius: 150px 26px 26px 26px;
+    border-start-start-radius: 150px;
+    border-start-end-radius: 26px;
+    border-end-end-radius: 26px;
+    border-end-start-radius: 26px;
+}
+
+/* gentle entrance */
+@keyframes bannerRise {
+    from { opacity: 0; transform: translateY(22px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.banner__wrapper-content > * {
+    animation: bannerRise .8s cubic-bezier(.2, .7, .2, 1) both;
+}
+
+.banner__wrapper-content > *:nth-child(2) { animation-delay: .08s; }
+.banner__wrapper-content > *:nth-child(3) { animation-delay: .16s; }
+.banner__wrapper-content > *:nth-child(4) { animation-delay: .24s; }
+
+.banner__wrapper-thumb {
+    animation: bannerRise 1s cubic-bezier(.2, .7, .2, 1) .15s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .banner__wrapper-content > *,
+    .banner__wrapper-thumb { animation: none; }
+    .banner-store,
+    .banner-frame img { transition: none; }
+}
+
+@media (max-width: 991px) {
+    .banner__wrapper {
+        padding: 56px 0 64px;
+        gap: 40px;
+    }
+
+    .banner__wrapper-content {
+        flex-basis: 100%;
+        max-width: none;
+    }
+
+    .banner__wrapper-thumb {
+        flex-basis: 100%;
+        max-width: 520px;
+        margin-inline: auto;
+    }
+
+    .banner-frame,
+    .banner__wrapper-thumb::before {
+        border-radius: 110px 22px 22px 22px;
+        border-start-start-radius: 110px;
+        border-start-end-radius: 22px;
+        border-end-end-radius: 22px;
+        border-end-start-radius: 22px;
+    }
+}
+
+@media (max-width: 575px) {
+    .banner-points li {
+        padding: 7px 13px;
+        font-size: 12.5px;
+    }
+
+    .banner-store img {
+        height: 50px;
+    }
+
+    .banner-frame {
+        padding-bottom: 90%;
+    }
+
+    .banner-frame,
+    .banner__wrapper-thumb::before {
+        border-radius: 90px 18px 18px 18px;
+        border-start-start-radius: 90px;
+        border-start-end-radius: 18px;
+        border-end-end-radius: 18px;
+        border-end-start-radius: 18px;
+    }
 }
 
 .banner-elem {

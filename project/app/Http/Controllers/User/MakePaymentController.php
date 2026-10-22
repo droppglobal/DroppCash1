@@ -24,7 +24,7 @@ class MakePaymentController extends Controller
     public function paymentForm()
     {
         $wallets = Wallet::where('user_id',auth()->id())->where('user_type',1)->where('balance', '>', 0)->get();
-        $recentPayments = Transaction::where('user_id',auth()->id())->where('user_type',1)->where('remark','merchant_payment')->with('currency')->paginate(10);
+        $recentPayments = Transaction::where('user_id',auth()->id())->where('user_type',1)->where('remark','merchant_payment')->with('currency')->latest()->paginate(10);
         $charge = charge('merchant-payment');
         return view('user.payment.payment_form',compact('wallets','charge','recentPayments'));
     }

@@ -90,7 +90,7 @@ class EscrowController extends ApiController
         $trnx->charge      = $finalCharge;
         $trnx->remark      = 'make_escrow';
         $trnx->type        = '-';
-        $trnx->details     = trans('Made escrow to '). $receiver->email;
+        $trnx->details     = trans('Made Escrow to '). $receiver->email;
         $trnx->save();
             return null;
         }, 3);
@@ -208,7 +208,10 @@ class EscrowController extends ApiController
             );
         } 
 
-        $txResponse = DB::transaction(function () use (&$amount, &$escrow, &$recipient, &$recipientWallet, &$trnx) {
+        // the person releasing the escrow IS the sender: they are shown on the receiver's transaction
+        $sender = auth()->user();
+
+        $txResponse = DB::transaction(function () use (&$amount, &$escrow, &$recipient, &$recipientWallet, &$trnx, &$sender) {
         // claim the escrow first: it can be released only once, even with parallel requests
         if(!Escrow::where('id',$escrow->id)->whereIn('status',[0,3])->update(['status'=>1])){
             return $this->sendError('Error',['Escrow not found']);
@@ -229,7 +232,7 @@ class EscrowController extends ApiController
         $trnx->charge      = $escrow->pay_charge == 0 ? $escrow->charge : 0;
         $trnx->remark      = 'make_escrow';
         $trnx->type        = '+';
-        $trnx->details     = trans('Received escrow money '). $recipient->email;
+        $trnx->details     = trans('Received Escrow from '). $sender->name;   // was the receiver's own email
         $trnx->save();
 
         $escrow->status = 1;

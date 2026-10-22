@@ -6,7 +6,7 @@
                 <div class="pe-xl-4 pe-xxl-5">
                     <div class="section-title text-lg-end">
                         <h6 class="subtitle text--base">@lang(@$section->content->title)</h6>
-                        <h2 class="title">@lang(@$section->content->heading)</h2>
+                        
                         <p>
                             @lang(@$section->content->sub_heading)
                         </p>
